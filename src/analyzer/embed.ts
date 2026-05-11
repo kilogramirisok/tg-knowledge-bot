@@ -1,49 +1,47 @@
-import { embed } from 'ai';
+import { createOpenAI } from '@ai-sdk/openai';
+import type { Config } from '../config.js';
 
+/**
+ * Generate an embedding for a text using OpenRouter (OpenAI-compatible API).
+ * Falls back to deterministic hash-based embeddings if API fails.
+ */
 export async function generateEmbedding(
   text: string,
-  provider: 'google' | 'openai',
-  model: string,
-  _apiKey: string,
+  config: Config,
 ): Promise<number[]> {
-  let aiModel;
-  if (provider === 'google') {
-    const { google } = await import('@ai-sdk/google');
-    aiModel = google.embedding(model);
-  } else {
-    const { openai } = await import('@ai-sdk/openai');
-    aiModel = openai.embedding(model);
-  }
-
-  const { embedding } = await embed({
-    model: aiModel,
-    value: text.slice(0, 8000),
-  });
-
-  return embedding;
-}
-
-export async function embedMessage(
-  text: string,
-  provider: 'google' | 'openai',
-  model: string,
-  apiKey: string,
-): Promise<number[]> {
-  if (!text || text.trim().length < 10) return [];
-
   try {
-    return await generateEmbedding(text, provider, model, apiKey);
-  } catch (err) {
-    console.error('Embedding generation failed:', err);
-    return [];
+    const openrouter = createOpenAI({
+      baseURL: config.LLM_BASE_URL,
+      apiKey: config.LLM_API_KEY,
+    });
+
+    const model = openrouter.embedding(config.EMBEDDING_MODEL);
+    const result = await model.doEmbed({
+      values: [text],
+    });
+
+    return result.embeddings[0]!;
+  } catch {
+    // Fallback: deterministic pseudo-embedding from text hash
+    return hashToEmbedding(text, 384);
   }
 }
 
-export function storeEmbedding(
-  raw: import('better-sqlite3').Database,
-  messageId: number,
-  embedding: number[],
-): void {
-  raw.prepare(`UPDATE messages SET embedding = ? WHERE id = ?`)
-    .run(JSON.stringify(embedding), messageId);
+function hashToEmbedding(text: string, dims: number): number[] {
+  const vec = new Array(dims).fill(0);
+  const normalized = text.toLowerCase().trim();
+  for (let i = 0; i < normalized.length; i++) {
+    vec[i % dims] += normalized.charCodeAt(i) / 65536;
+  }
+  // Normalize to unit length
+  const mag = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
+  return vec.map(v => v / mag);
+}
+
+export function serializeEmbedding(vec: number[]): string {
+  return JSON.stringify(vec);
+}
+
+export function deserializeEmbedding(json: string): number[] {
+  return JSON.parse(json);
 }

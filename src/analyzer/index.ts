@@ -1,162 +1,155 @@
-import { generateObject } from 'ai';
-import { z } from 'zod';
 import type { AppDB } from '../db/index.js';
 import type { Config } from '../config.js';
 import { classifyMessage } from './classify.js';
-import { embedMessage, storeEmbedding } from './embed.js';
-import { checkDuplicate } from './dedup.js';
-import { scoreQuality, calculateFinalScore, recencyScore } from './quality.js';
-import { serializeEmbedding } from '../utils/vectors.js';
-import { QUALITY_THRESHOLD } from '../types.js';
+import { generateEmbedding, serializeEmbedding } from './embed.js';
+import { findSimilarEntry } from './dedup.js';
+import { evaluateQuality } from './quality.js';
+import { getReputationScore } from '../reputation/index.js';
+import chalk from 'chalk';
 
-interface MessageRow {
-  id: number;
-  text: string | null;
-  user_id: number | null;
-  reactions_count: number;
-  timestamp: number;
-}
-
-export async function processMessage(db: AppDB, config: Config, messageId: number): Promise<void> {
-  const msg = db.raw.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId) as MessageRow | undefined;
-  if (!msg || !msg.text) return;
-
-  const apiKey = config.GOOGLE_GENERATIVE_AI_API_KEY ?? config.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.warn('No API key — skipping analysis');
-    return;
-  }
-
-  try {
-    // Step 1: Classify
-    const classification = await classifyMessage(
-      msg.text,
-      config.LLM_MODEL,
-      config.GOOGLE_GENERATIVE_AI_API_KEY,
-      config.OPENAI_API_KEY,
-    );
-
-    db.raw.prepare(`UPDATE messages SET classification = ?, processed_at = unixepoch() WHERE id = ?`)
-      .run(classification.type, msg.id);
-
-    // Step 2: Embed answers and questions
-    if (classification.type === 'answer' || classification.type === 'question') {
-      const embedding = await embedMessage(
-        msg.text,
-        config.EMBEDDING_PROVIDER as 'google' | 'openai',
-        config.EMBEDDING_MODEL,
-        apiKey,
-      );
-      if (embedding.length > 0) {
-        storeEmbedding(db.raw, msg.id, embedding);
-      }
-
-      // Step 3: Process answers into KB
-      if (classification.type === 'answer') {
-        await processAnswer(db, config, msg, embedding, classification.topic, apiKey);
-      }
-    }
-
-    console.log(`[analyze] msg ${msg.id} → ${classification.type}`);
-  } catch (err) {
-    console.error(`[analyze] msg ${msg.id} failed:`, err);
-  }
-}
-
-async function processAnswer(
-  db: AppDB,
-  config: Config,
-  msg: MessageRow,
-  embedding: number[],
-  topic: string | undefined,
-  apiKey: string,
-): Promise<void> {
-  const quality = await scoreQuality(msg.text!, config.LLM_MODEL, config.GOOGLE_GENERATIVE_AI_API_KEY, config.OPENAI_API_KEY);
-
-  db.raw.prepare(`UPDATE messages SET quality_score = ? WHERE id = ?`)
-    .run(quality.overall, msg.id);
-
-  // User reputation
-  let userReputation = 0.5;
-  if (msg.user_id) {
-    const row = db.raw.prepare(`SELECT reputation_score FROM users WHERE id = ?`).get(msg.user_id) as { reputation_score: number } | undefined;
-    if (row) userReputation = row.reputation_score ?? 0.5;
-  }
-
-  const communitySignal = Math.min((msg.reactions_count ?? 0) / 10, 1);
-  const recency = recencyScore(new Date(msg.timestamp * 1000));
-  const sourceDiversity = 0.5;
-
-  const finalScore = calculateFinalScore({
-    qualityScore: quality.overall,
-    userReputation,
-    communitySignal,
-    recencyScore: recency,
-    sourceDiversity,
-  });
-
-  console.log(`[score] msg ${msg.id}: quality=${quality.overall.toFixed(2)} rep=${userReputation.toFixed(2)} final=${finalScore.toFixed(2)}`);
-
-  if (finalScore < QUALITY_THRESHOLD) {
-    console.log(`[skip] msg ${msg.id}: score ${finalScore.toFixed(2)} below threshold`);
-    return;
-  }
-
-  // Dedup check
-  if (embedding.length > 0) {
-    const dedup = await checkDuplicate(db, embedding);
-    if (dedup.isDuplicate && dedup.similarEntryId) {
-      if (dedup.shouldMerge) {
-        const existing = db.raw.prepare(
-          `SELECT id, confidence_score, source_message_ids, contributor_user_ids FROM knowledge_entries WHERE id = ?`,
-        ).get(dedup.similarEntryId) as { id: number; confidence_score: number; source_message_ids: string | null; contributor_user_ids: string | null } | undefined;
-
-        if (existing && finalScore > existing.confidence_score) {
-          const srcIds = JSON.stringify([msg.id, ...JSON.parse(existing.source_message_ids ?? '[]') as number[]]);
-          const contribIds = JSON.stringify([msg.user_id, ...JSON.parse(existing.contributor_user_ids ?? '[]') as number[]]);
-          db.raw.prepare(
-            `UPDATE knowledge_entries SET best_answer_text = ?, confidence_score = ?, source_message_ids = ?, contributor_user_ids = ?, updated_at = unixepoch() WHERE id = ?`,
-          ).run(msg.text, finalScore, srcIds, contribIds, existing.id);
-          console.log(`[merge] Updated KB entry ${existing.id}`);
-        }
-      }
-      return;
-    }
-  }
-
-  // New KB entry
-  const topicQuestion = topic ?? 'General';
-  db.raw.prepare(
-    `INSERT INTO knowledge_entries (topic_question, best_answer_text, confidence_score, source_message_ids, contributor_user_ids, embedding, version, is_active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 1, 1, unixepoch(), unixepoch())`,
-  ).run(
-    topicQuestion,
-    msg.text,
-    finalScore,
-    JSON.stringify([msg.id]),
-    JSON.stringify(msg.user_id ? [msg.user_id] : []),
-    serializeEmbedding(embedding),
-  );
-
-  console.log(`[kb] New entry for "${topicQuestion}" (score: ${finalScore.toFixed(2)})`);
-}
-
+/**
+ * Process all unprocessed messages through the full pipeline:
+ * classify → embed → dedup check → quality score → insert into KB
+ */
 export async function processAllUnprocessed(db: AppDB, config: Config): Promise<void> {
   const unprocessed = db.raw.prepare(
-    `SELECT id FROM messages WHERE processed_at IS NULL LIMIT 50`,
-  ).all() as Array<{ id: number }>;
+    `SELECT m.id, m.text, m.user_id, m.tg_message_id, m.reply_to_message_id, m.reactions_count,
+            u.tg_user_id, u.username, u.display_name, u.reputation_score
+     FROM messages m
+     LEFT JOIN users u ON m.user_id = u.id
+     WHERE m.processed_at IS NULL AND m.text IS NOT NULL AND length(m.text) > 10
+     ORDER BY m.timestamp ASC
+     LIMIT 50`,
+  ).all() as any[];
 
   if (unprocessed.length === 0) {
-    console.log('[analyze] No unprocessed messages');
+    console.log(chalk.gray('[analyzer] No unprocessed messages'));
     return;
   }
 
-  console.log(`[analyze] Processing ${unprocessed.length} messages`);
+  console.log(chalk.cyan(`[analyzer] Processing ${unprocessed.length} messages...`));
 
   for (const msg of unprocessed) {
-    await processMessage(db, config, msg.id);
-    await new Promise(r => setTimeout(r, 200));
+    try {
+      await processMessage(db, msg, config);
+    } catch (err) {
+      console.error(chalk.red(`[analyzer] Failed msg ${msg.id}:`), err);
+    }
+  }
+}
+
+async function processMessage(db: AppDB, msg: any, config: Config): Promise<void> {
+  // Step 1: Classify
+  const classification = await classifyMessage(msg.text, config.LLM_BASE_URL, config.LLM_API_KEY, config.LLM_MODEL);
+
+  // Step 2: Update classification in DB
+  db.raw.prepare(
+    `UPDATE messages SET classification = ? WHERE id = ?`,
+  ).run(classification.type, msg.id);
+
+  // Step 3: Generate embedding
+  let embedding: number[];
+  try {
+    embedding = await generateEmbedding(msg.text, config);
+    db.raw.prepare(`UPDATE messages SET embedding = ? WHERE id = ?`).run(serializeEmbedding(embedding), msg.id);
+  } catch {
+    console.log(chalk.yellow(`  [${msg.id}] Embedding failed, skipping dedup`));
+    db.raw.prepare(`UPDATE messages SET processed_at = unixepoch() WHERE id = ?`).run(msg.id);
+    return;
   }
 
-  console.log('[analyze] Done');
+  console.log(chalk.white(`  [${msg.id}] ${classification.type} (conf: ${classification.confidence.toFixed(2)}) ${classification.topic ?? ''}`));
+
+  // Step 4: For answers, run quality + dedup → KB
+  if (classification.type === 'answer') {
+    // Find the question it answers (reply chain or recent question)
+    const questionText = await findRelatedQuestion(db, msg);
+
+    // Quality evaluation
+    const quality = await evaluateQuality(questionText, msg.text, config);
+
+    // Dedup check
+    const dedup = await findSimilarEntry(db, embedding, 0.85);
+
+    // Get user reputation
+    const reputation = await getReputationScore(db, msg.user_id);
+
+    // Composite score
+    const finalScore = computeFinalScore(quality.overall, reputation, msg.reactions_count);
+
+    console.log(chalk.green(`    quality=${quality.overall.toFixed(2)} rep=${reputation.toFixed(2)} reactions=${msg.reactions_count} final=${finalScore.toFixed(2)}`));
+
+    if (finalScore >= 0.5) {
+      if (dedup) {
+        // Update existing entry if this is better
+        if (finalScore > dedup.confidence_score) {
+          db.raw.prepare(
+            `UPDATE knowledge_entries
+             SET best_answer_text = ?, confidence_score = ?, source_message_ids = ?,
+                 contributor_user_ids = ?, updated_at = unixepoch(), version = version + 1
+             WHERE id = ?`,
+          ).run(
+            msg.text,
+            finalScore,
+            JSON.stringify([msg.tg_message_id]),
+            JSON.stringify([msg.user_id]),
+            dedup.id,
+          );
+          console.log(chalk.blue(`    → Updated KB entry #${dedup.id} (better score)`));
+        } else {
+          console.log(chalk.gray(`    → Duplicate of #${dedup.id}, lower score, skipped`));
+        }
+      } else {
+        // New KB entry
+        const topic = classification.topic ?? extractTopic(msg.text);
+        db.raw.prepare(
+          `INSERT INTO knowledge_entries (topic_question, best_answer_text, confidence_score, source_message_ids, contributor_user_ids, tags, embedding, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())`,
+        ).run(
+          topic,
+          msg.text,
+          finalScore,
+          JSON.stringify([msg.tg_message_id]),
+          JSON.stringify([msg.user_id]),
+          '',
+          serializeEmbedding(embedding),
+        );
+        console.log(chalk.green(`    → New KB entry: "${topic.substring(0, 50)}..."`));
+      }
+    } else {
+      console.log(chalk.gray(`    → Score ${finalScore.toFixed(2)} below threshold 0.5, skipped`));
+    }
+  }
+
+  // Mark as processed
+  db.raw.prepare(`UPDATE messages SET processed_at = unixepoch() WHERE id = ?`).run(msg.id);
+}
+
+function computeFinalScore(quality: number, reputation: number, reactions: number): number {
+  // Normalize reactions (0-20 range → 0-1)
+  const communitySignal = Math.min(reactions / 20, 1);
+  return quality * 0.4 + reputation * 0.25 + communitySignal * 0.2 + 0.15;
+}
+
+async function findRelatedQuestion(db: AppDB, msg: any): Promise<string> {
+  // If replying to a message, find that message
+  if (msg.reply_to_message_id) {
+    const parent = db.raw.prepare(
+      `SELECT text FROM messages WHERE tg_message_id = ?`,
+    ).get(msg.reply_to_message_id) as { text: string } | undefined;
+    if (parent?.text) return parent.text;
+  }
+
+  // Otherwise, find the most recent question before this message
+  const recent = db.raw.prepare(
+    `SELECT text FROM messages WHERE classification = 'question' AND timestamp < (SELECT timestamp FROM messages WHERE id = ?) ORDER BY timestamp DESC LIMIT 1`,
+  ).get(msg.id) as { text: string } | undefined;
+
+  return recent?.text ?? 'General knowledge';
+}
+
+function extractTopic(text: string): string {
+  // Take first sentence or first 80 chars as topic
+  const firstSentence = text.split(/[.!?]/)[0] ?? text;
+  return firstSentence.length > 80 ? firstSentence.substring(0, 80) + '...' : firstSentence;
 }

@@ -1,6 +1,17 @@
 import type { AppDB } from '../db/index.js';
 import { DEFAULT_REPUTATION_WEIGHTS } from '../types.js';
 
+/**
+ * Get reputation score for a single user (cached from DB).
+ */
+export async function getReputationScore(db: AppDB, userId: number | null): Promise<number> {
+  if (!userId) return 0;
+  const row = db.raw.prepare(
+    `SELECT reputation_score FROM users WHERE id = ?`,
+  ).get(userId) as { reputation_score: number } | undefined;
+  return row?.reputation_score ?? 0;
+}
+
 export async function recalculateReputations(db: AppDB): Promise<void> {
   console.log('[reputation] Recalculating...');
 

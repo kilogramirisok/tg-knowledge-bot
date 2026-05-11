@@ -1,54 +1,72 @@
 import type { AppDB } from '../db/index.js';
-import { knowledgeEntries } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
-import { findMostSimilar, deserializeEmbedding } from '../utils/vectors.js';
-import type { DedupResult } from '../types.js';
-import { DEDUP_SIMILARITY_THRESHOLD } from '../types.js';
+import { cosineSimilarity, deserializeEmbedding } from '../utils/vectors.js';
 
-export async function checkDuplicate(db: AppDB, newEmbedding: number[]): Promise<DedupResult> {
-  if (newEmbedding.length === 0) {
-    return { isDuplicate: false, similarity: 0, shouldMerge: false };
-  }
-
-  const entries = db.raw.prepare(
-    `SELECT id, embedding FROM knowledge_entries WHERE is_active = 1`,
-  ).all() as Array<{ id: number; embedding: string | null }>;
-
-  if (entries.length === 0) {
-    return { isDuplicate: false, similarity: 0, shouldMerge: false };
-  }
-
-  const candidates = entries
-    .map(e => ({ id: e.id, embedding: deserializeEmbedding(e.embedding) }))
-    .filter(c => c.embedding.length > 0);
-
-  const matches = findMostSimilar(newEmbedding, candidates, { limit: 1, threshold: DEDUP_SIMILARITY_THRESHOLD });
-
-  if (matches.length === 0) {
-    return { isDuplicate: false, similarity: 0, shouldMerge: false };
-  }
-
-  const best = matches[0]!;
-  return {
-    isDuplicate: true,
-    similarEntryId: best.id,
-    similarity: best.similarity,
-    shouldMerge: best.similarity > 0.92,
-  };
+interface KBEntry {
+  id: number;
+  topic_question: string;
+  best_answer_text: string;
+  confidence_score: number;
+  embedding: string | null;
 }
 
-export async function findSimilarEntries(
+/**
+ * Find the most similar KB entry above threshold.
+ */
+export async function findSimilarEntry(
   db: AppDB,
   queryEmbedding: number[],
-  limit: number = 5,
-): Promise<Array<{ id: number; similarity: number }>> {
+  threshold: number = 0.85,
+): Promise<KBEntry | null> {
   const entries = db.raw.prepare(
-    `SELECT id, embedding FROM knowledge_entries WHERE is_active = 1`,
-  ).all() as Array<{ id: number; embedding: string | null }>;
+    `SELECT id, topic_question, best_answer_text, confidence_score, embedding FROM knowledge_entries WHERE is_active = 1 AND embedding IS NOT NULL`,
+  ).all() as KBEntry[];
 
-  const candidates = entries
-    .map(e => ({ id: e.id, embedding: deserializeEmbedding(e.embedding) }))
-    .filter(c => c.embedding.length > 0);
+  let bestMatch: KBEntry | null = null;
+  let bestSim = threshold;
 
-  return findMostSimilar(queryEmbedding, candidates, { limit, threshold: 0.5 });
+  for (const entry of entries) {
+    if (!entry.embedding) continue;
+    try {
+      const emb = deserializeEmbedding(entry.embedding);
+      const sim = cosineSimilarity(queryEmbedding, emb);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestMatch = entry;
+      }
+    } catch {
+      // Skip entries with corrupted embeddings
+    }
+  }
+
+  return bestMatch;
+}
+
+/**
+ * Find multiple similar KB entries (for query interface).
+ */
+export function findSimilarEntries(
+  db: AppDB,
+  queryEmbedding: number[],
+  threshold: number = 0.3,
+  limit: number = 5,
+): KBEntry[] {
+  const entries = db.raw.prepare(
+    `SELECT id, topic_question, best_answer_text, confidence_score, embedding FROM knowledge_entries WHERE is_active = 1 AND embedding IS NOT NULL`,
+  ).all() as KBEntry[];
+
+  const scored = entries
+    .map(entry => {
+      if (!entry.embedding) return null;
+      try {
+        const emb = deserializeEmbedding(entry.embedding);
+        return { entry, similarity: cosineSimilarity(queryEmbedding, emb) };
+      } catch {
+        return null;
+      }
+    })
+    .filter((x): x is { entry: KBEntry; similarity: number } => x !== null && x.similarity >= threshold)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, limit);
+
+  return scored.map(s => s.entry);
 }

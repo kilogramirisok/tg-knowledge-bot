@@ -4,15 +4,15 @@ export interface ClassifiedMessage {
   type: MessageClassification;
   topic?: string;
   confidence: number;
-  reasoning: string;
+  reason: string;
 }
 
 export interface QualityScore {
   completeness: number;
   specificity: number;
-  actionable: number;
+  evidence: number;
+  actionability: number;
   overall: number;
-  reasoning: string;
 }
 
 export interface DedupResult {
