@@ -16,24 +16,33 @@ const envSchema = z.object({
 
 export type Config = z.infer<typeof envSchema>;
 
-export function loadConfig(): Config {
-  return envSchema.parse(process.env);
-}
+const VALID_MODES = ['seed', 'ingest', 'analyze', 'reputation', 'query', 'all'] as const;
 
 export function getMode(): string {
   const args = process.argv;
+
+  // Handle --mode=seed or --mode seed
+  for (const arg of args) {
+    if (arg.startsWith('--mode=')) {
+      return arg.slice('--mode='.length);
+    }
+  }
   const modeIdx = args.indexOf('--mode');
   if (modeIdx !== -1 && args[modeIdx + 1]) {
     return args[modeIdx + 1] ?? 'all';
   }
-  // Check for shorthand: --seed, --analyze, etc.
+  // Shorthand: --seed, --analyze, etc.
   for (const arg of args) {
     if (arg.startsWith('--') && !arg.startsWith('--mode')) {
       const mode = arg.slice(2);
-      if (['seed', 'ingest', 'analyze', 'reputation', 'query', 'all'].includes(mode)) {
+      if ((VALID_MODES as readonly string[]).includes(mode)) {
         return mode;
       }
     }
   }
   return 'all';
+}
+
+export function loadConfig(): Config {
+  return envSchema.parse(process.env);
 }
