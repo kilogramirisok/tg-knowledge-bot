@@ -1,11 +1,13 @@
-import type { AppDB } from '../db/index.js';
+import type { DB } from '../db/index.js';
+import { knowledgeEntries } from '../db/schema.js';
+import { eq, and, isNotNull } from 'drizzle-orm';
 import { cosineSimilarity, deserializeEmbedding } from '../utils/vectors.js';
 
 interface KBEntry {
   id: number;
-  topic_question: string;
-  best_answer_text: string;
-  confidence_score: number;
+  topicQuestion: string;
+  bestAnswerText: string;
+  confidenceScore: number;
   embedding: string | null;
 }
 
@@ -13,13 +15,23 @@ interface KBEntry {
  * Find the most similar KB entry above threshold.
  */
 export async function findSimilarEntry(
-  db: AppDB,
+  db: DB,
   queryEmbedding: number[],
   threshold: number = 0.85,
 ): Promise<KBEntry | null> {
-  const entries = db.raw.prepare(
-    `SELECT id, topic_question, best_answer_text, confidence_score, embedding FROM knowledge_entries WHERE is_active = 1 AND embedding IS NOT NULL`,
-  ).all() as KBEntry[];
+  const entries = db.select({
+    id: knowledgeEntries.id,
+    topicQuestion: knowledgeEntries.topicQuestion,
+    bestAnswerText: knowledgeEntries.bestAnswerText,
+    confidenceScore: knowledgeEntries.confidenceScore,
+    embedding: knowledgeEntries.embedding,
+  })
+    .from(knowledgeEntries)
+    .where(and(
+      eq(knowledgeEntries.isActive, true),
+      isNotNull(knowledgeEntries.embedding),
+    ))
+    .all();
 
   let bestMatch: KBEntry | null = null;
   let bestSim = threshold;
@@ -45,14 +57,24 @@ export async function findSimilarEntry(
  * Find multiple similar KB entries (for query interface).
  */
 export function findSimilarEntries(
-  db: AppDB,
+  db: DB,
   queryEmbedding: number[],
   threshold: number = 0.3,
   limit: number = 5,
 ): KBEntry[] {
-  const entries = db.raw.prepare(
-    `SELECT id, topic_question, best_answer_text, confidence_score, embedding FROM knowledge_entries WHERE is_active = 1 AND embedding IS NOT NULL`,
-  ).all() as KBEntry[];
+  const entries = db.select({
+    id: knowledgeEntries.id,
+    topicQuestion: knowledgeEntries.topicQuestion,
+    bestAnswerText: knowledgeEntries.bestAnswerText,
+    confidenceScore: knowledgeEntries.confidenceScore,
+    embedding: knowledgeEntries.embedding,
+  })
+    .from(knowledgeEntries)
+    .where(and(
+      eq(knowledgeEntries.isActive, true),
+      isNotNull(knowledgeEntries.embedding),
+    ))
+    .all();
 
   const scored = entries
     .map(entry => {

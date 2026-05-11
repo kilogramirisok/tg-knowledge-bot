@@ -1,35 +1,40 @@
-import type { AppDB } from '../db/index.js';
+import type { DB } from '../db/index.js';
+import { users, messages } from '../db/schema.js';
+import { eq, and, gte, count, sql } from 'drizzle-orm';
 import { DEFAULT_REPUTATION_WEIGHTS } from '../types.js';
 
 /**
  * Get reputation score for a single user (cached from DB).
  */
-export async function getReputationScore(db: AppDB, userId: number | null): Promise<number> {
+export async function getReputationScore(db: DB, userId: number | null): Promise<number> {
   if (!userId) return 0;
-  const row = db.raw.prepare(
-    `SELECT reputation_score FROM users WHERE id = ?`,
-  ).get(userId) as { reputation_score: number } | undefined;
-  return row?.reputation_score ?? 0;
+  const row = db.select({ reputationScore: users.reputationScore })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  return row?.reputationScore ?? 0;
 }
 
-export async function recalculateReputations(db: AppDB): Promise<void> {
+export async function recalculateReputations(db: DB): Promise<void> {
   console.log('[reputation] Recalculating...');
 
-  const allUsers = db.raw.prepare(`SELECT id FROM users`).all() as Array<{ id: number }>;
+  const allUsers = db.select({ id: users.id }).from(users).all();
   const now = new Date();
   const thirtyDaysAgo = Math.floor(now.getTime() / 1000) - 30 * 24 * 60 * 60;
 
   for (const user of allUsers) {
     const score = await calculateUserReputation(db, user.id, thirtyDaysAgo, now);
-    db.raw.prepare(`UPDATE users SET reputation_score = ?, updated_at = unixepoch() WHERE id = ?`)
-      .run(score, user.id);
+    db.update(users)
+      .set({ reputationScore: score, updatedAt: new Date() })
+      .where(eq(users.id, user.id))
+      .run();
   }
 
   console.log(`[reputation] Updated ${allUsers.length} users`);
 }
 
 async function calculateUserReputation(
-  db: AppDB,
+  db: DB,
   userId: number,
   sinceTimestamp: number,
   now: Date,
@@ -49,34 +54,48 @@ async function calculateUserReputation(
   0), 1);
 }
 
-async function calcActivity(db: AppDB, userId: number, since: number): Promise<number> {
-  const row = db.raw.prepare(
-    `SELECT COUNT(*) as cnt FROM messages WHERE user_id = ? AND timestamp >= ?`,
-  ).get(userId, since) as { cnt: number } | undefined;
-  return Math.min((row?.cnt ?? 0) / 5, 1);
+async function calcActivity(db: DB, userId: number, since: number): Promise<number> {
+  const row = db.select({ count: count() })
+    .from(messages)
+    .where(and(
+      eq(messages.userId, userId),
+      gte(messages.timestamp, new Date(since * 1000)),
+    ))
+    .get();
+  return Math.min((row?.count ?? 0) / 5, 1);
 }
 
-async function calcExpertise(db: AppDB, userId: number, since: number): Promise<number> {
-  const row = db.raw.prepare(
-    `SELECT COALESCE(SUM(reactions_count), 0) as total FROM messages WHERE user_id = ? AND timestamp >= ? AND classification = 'answer'`,
-  ).get(userId, since) as { total: number } | undefined;
+async function calcExpertise(db: DB, userId: number, since: number): Promise<number> {
+  const row = db.select({ total: sql<number>`coalesce(sum(${messages.reactionsCount}), 0)` })
+    .from(messages)
+    .where(and(
+      eq(messages.userId, userId),
+      gte(messages.timestamp, new Date(since * 1000)),
+      eq(messages.classification, 'answer'),
+    ))
+    .get();
   return Math.min((row?.total ?? 0) / 10, 1);
 }
 
-async function calcCuration(db: AppDB, userId: number): Promise<number> {
-  const row = db.raw.prepare(
-    `SELECT answers_given, entries_curated FROM users WHERE id = ?`,
-  ).get(userId) as { answers_given: number; entries_curated: number } | undefined;
-  if (!row || row.answers_given === 0) return 0;
-  return Math.min(row.entries_curated / row.answers_given, 1);
+async function calcCuration(db: DB, userId: number): Promise<number> {
+  const row = db.select({
+    answersGiven: users.answersGiven,
+    entriesCurated: users.entriesCurated,
+  })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  if (!row || !row.answersGiven) return 0;
+  return Math.min((row.entriesCurated ?? 0) / row.answersGiven, 1);
 }
 
-async function calcRecency(db: AppDB, userId: number, now: Date): Promise<number> {
-  const row = db.raw.prepare(
-    `SELECT last_active_at FROM users WHERE id = ?`,
-  ).get(userId) as { last_active_at: number | null } | undefined;
-  if (!row?.last_active_at) return 0;
+async function calcRecency(db: DB, userId: number, now: Date): Promise<number> {
+  const row = db.select({ lastActiveAt: users.lastActiveAt })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  if (!row?.lastActiveAt) return 0;
 
-  const ageDays = (now.getTime() / 1000 - row.last_active_at) / (24 * 60 * 60);
+  const ageDays = (now.getTime() - row.lastActiveAt.getTime()) / (1000 * 24 * 60 * 60);
   return Math.exp(-0.693 * ageDays / 7);
 }

@@ -13,10 +13,10 @@ async function main() {
 
   console.log(`[main] Starting tg-knowledge-bot in ${mode} mode`);
 
-  const db = createDB(config.DATABASE_PATH);
+  const { db, sqlite, close } = createDB(config.DATABASE_PATH);
 
-  // Create tables if they don't exist
-  db.raw.exec(`
+  // Create tables if they don't exist (DDL uses raw sqlite instance)
+  sqlite.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tg_user_id INTEGER UNIQUE NOT NULL,
@@ -119,7 +119,7 @@ async function main() {
     process.exit(1);
   } finally {
     if (mode !== 'all' && mode !== 'ingest' && mode !== 'query') {
-      db.close();
+      close();
     }
   }
 }

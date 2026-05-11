@@ -1,7 +1,8 @@
-import type { AppDB } from '../db/index.js';
+import type { DB } from '../db/index.js';
+import { users, messages } from '../db/schema.js';
 import chalk from 'chalk';
 
-export async function seedTestData(db: AppDB): Promise<void> {
+export async function seedTestData(db: DB): Promise<void> {
   console.log(chalk.cyan('🌱 Seeding test data...\n'));
 
   const testUsers = [
@@ -15,24 +16,26 @@ export async function seedTestData(db: AppDB): Promise<void> {
     { tgUserId: 100008, username: 'crypto_dave', displayName: 'Dave', reputationScore: 0.3 },
   ];
 
-  const insertUser = db.raw.prepare(
-    `INSERT OR IGNORE INTO users (tg_user_id, username, display_name, reputation_score, message_count, answers_given, reactions_received, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())`,
-  );
-
   for (const u of testUsers) {
-    insertUser.run(u.tgUserId, u.username, u.displayName, u.reputationScore, 10 + Math.floor(Math.random() * 100), Math.floor(Math.random() * 20), Math.floor(Math.random() * 50));
+    db.insert(users).values({
+      tgUserId: u.tgUserId,
+      username: u.username,
+      displayName: u.displayName,
+      reputationScore: u.reputationScore,
+      messageCount: 10 + Math.floor(Math.random() * 100),
+      answersGiven: Math.floor(Math.random() * 20),
+      reactionsReceived: Math.floor(Math.random() * 50),
+    }).onConflictDoNothing({ target: users.tgUserId }).run();
   }
   console.log(chalk.green(`  ✓ Created ${testUsers.length} test users`));
 
-  const chatId = '1234567890';
+  // Build tgUserId → internal id map
+  const allUsers = db.select({ tgUserId: users.tgUserId, id: users.id }).from(users).all();
+  const userIdMap = new Map(allUsers.map(u => [u.tgUserId, u.id]));
+
+  const chatId = 1234567890;
   const now = Math.floor(Date.now() / 1000);
   const hour = 3600;
-
-  const insertMsg = db.raw.prepare(
-    `INSERT INTO messages (tg_message_id, user_id, chat_id, text, reply_to_message_id, reactions_count, timestamp, created_at)
-     VALUES (?, (SELECT id FROM users WHERE tg_user_id = ?), ?, ?, NULL, ?, ?, unixepoch())`,
-  );
 
   const testMessages: Array<{ userId: number; text: string; hoursAgo: number; reactions: number }> = [
     // Beckham Law thread
@@ -67,8 +70,16 @@ export async function seedTestData(db: AppDB): Promise<void> {
 
   let msgTgId = 1;
   for (const msg of testMessages) {
+    const internalUserId = userIdMap.get(msg.userId) ?? null;
     const timestamp = Math.floor(now - msg.hoursAgo * hour);
-    insertMsg.run(msgTgId++, msg.userId, chatId, msg.text, msg.reactions, timestamp);
+    db.insert(messages).values({
+      tgMessageId: msgTgId++,
+      userId: internalUserId,
+      chatId,
+      text: msg.text,
+      reactionsCount: msg.reactions,
+      timestamp: new Date(timestamp * 1000),
+    }).run();
   }
 
   console.log(chalk.green(`  ✓ Created ${testMessages.length} test messages`));

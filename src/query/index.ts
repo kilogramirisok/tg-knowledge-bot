@@ -2,7 +2,7 @@ import { generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
-import type { AppDB } from '../db/index.js';
+import type { DB } from '../db/index.js';
 import type { Config } from '../config.js';
 import { generateEmbedding } from '../analyzer/embed.js';
 import { findSimilarEntries } from '../analyzer/dedup.js';
@@ -11,7 +11,7 @@ import chalk from 'chalk';
 /**
  * Interactive query interface — search the KB from terminal.
  */
-export async function startInteractiveQuery(db: AppDB, config: Config): Promise<void> {
+export async function startInteractiveQuery(db: DB, config: Config): Promise<void> {
   const openrouter = createOpenAI({
     baseURL: config.LLM_BASE_URL,
     apiKey: config.LLM_API_KEY,
@@ -41,14 +41,14 @@ export async function startInteractiveQuery(db: AppDB, config: Config): Promise<
       console.log(chalk.white(`  Found ${matches.length} related entries:\n`));
 
       for (const match of matches) {
-        console.log(chalk.green(`  📋 ${match.topic_question}`));
-        console.log(chalk.white(`     Score: ${match.confidence_score.toFixed(2)}`));
-        console.log(chalk.gray(`     ${match.best_answer_text.substring(0, 120)}...`));
+        console.log(chalk.green(`  📋 ${match.topicQuestion}`));
+        console.log(chalk.white(`     Score: ${match.confidenceScore.toFixed(2)}`));
+        console.log(chalk.gray(`     ${match.bestAnswerText.substring(0, 120)}...`));
         console.log();
       }
 
       // Synthesize an answer with LLM
-      const context = matches.map(m => `Q: ${m.topic_question}\nA: ${m.best_answer_text}`).join('\n\n');
+      const context = matches.map(m => `Q: ${m.topicQuestion}\nA: ${m.bestAnswerText}`).join('\n\n');
 
       const { text: answer } = await generateText({
         model: openrouter(config.LLM_MODEL),

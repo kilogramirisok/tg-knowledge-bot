@@ -4,24 +4,20 @@ import * as schema from './schema.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-export interface AppDB {
-  drizzle: ReturnType<typeof drizzle<typeof schema>>;
-  raw: Database.Database;
-  close: () => void;
-}
-
-export function createDB(dbPath: string): AppDB {
+export function createDB(dbPath: string) {
   mkdirSync(dirname(dbPath), { recursive: true });
 
-  const raw = new Database(dbPath);
-  raw.pragma('journal_mode = WAL');
-  raw.pragma('foreign_keys = ON');
+  const sqlite = new Database(dbPath);
+  sqlite.pragma('journal_mode = WAL');
+  sqlite.pragma('foreign_keys = ON');
 
-  const d = drizzle(raw, { schema });
+  const db = drizzle(sqlite, { schema });
 
   return {
-    drizzle: d,
-    raw,
-    close: () => raw.close(),
+    db,
+    sqlite,
+    close: () => sqlite.close(),
   };
 }
+
+export type DB = ReturnType<typeof createDB>['db'];
