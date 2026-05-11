@@ -1,0 +1,7 @@
+node_modules/
+dist/
+data/
+*.db
+*.session
+.env
+.tg-session
