@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1778571180490,
+      "tag": "0000_zippy_starhawk",
+      "breakpoints": true
+    }
+  ]
+}

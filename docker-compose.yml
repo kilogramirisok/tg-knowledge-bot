@@ -1,17 +1,19 @@
 services:
   bot:
     build: .
-    restart: unless-stopped
-    environment:
-      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
-      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
-      - TELEGRAM_SESSION=${TELEGRAM_SESSION}
-      - TARGET_GROUP=${TARGET_GROUP:-taxesnomadspain}
-      - GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY}
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-google}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-004}
-      - LLM_MODEL=${LLM_MODEL:-gemini-2.0-flash}
-      - DATABASE_PATH=/app/data/knowledge.db
-      - LOG_LEVEL=${LOG_LEVEL:-info}
+    env_file: .env
+    depends_on:
+      - redis
     volumes:
       - ./data:/app/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy allkeys-lru
+
+volumes:
+  redis-data:

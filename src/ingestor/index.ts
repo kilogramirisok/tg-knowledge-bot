@@ -2,6 +2,7 @@ import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import type { DB } from '../db/index.js';
 import type { Config } from '../config.js';
+import type { Queues } from '../queue/queues.js';
 import { users, messages } from '../db/schema.js';
 import { eq, sql, count } from 'drizzle-orm';
 
@@ -9,7 +10,7 @@ import { eq, sql, count } from 'drizzle-orm';
  * Start the MTProto ingestor — reads all new messages from the target group.
  * Uses your personal Telegram account via gramjs.
  */
-export async function startIngestor(db: DB, config: Config): Promise<void> {
+export async function startIngestor(db: DB, config: Config, queues?: Queues): Promise<void> {
   if (!config.TELEGRAM_API_ID || !config.TELEGRAM_API_HASH) {
     throw new Error('TELEGRAM_API_ID and TELEGRAM_API_HASH required. Get from https://my.telegram.org');
   }
@@ -32,7 +33,7 @@ export async function startIngestor(db: DB, config: Config): Promise<void> {
   const result = db.select({ cnt: count() }).from(messages).get();
   if ((result?.cnt ?? 0) === 0) {
     console.log('[ingestor] DB empty — backfilling recent messages');
-    await backfillMessages(db, client, chatId, 200);
+    await backfillMessages(db, client, chatId, 200, queues);
   }
 
   // Listen for new messages
@@ -64,6 +65,16 @@ export async function startIngestor(db: DB, config: Config): Promise<void> {
           reactionsCount: 0,
           timestamp: new Date((msg.date ?? Math.floor(Date.now() / 1000)) * 1000),
         }).run();
+
+        // Get the auto-incremented internal id
+        const inserted = db.select({ id: messages.id })
+          .from(messages)
+          .where(eq(messages.tgMessageId, msg.id))
+          .get();
+
+        if (queues && inserted) {
+          await queues.classify.add('classify', { messageId: inserted.id, text: msg.text });
+        }
       }
 
       console.log(`[ingestor] msg ${msg.id} from @${username}`);
@@ -81,6 +92,7 @@ async function backfillMessages(
   client: TelegramClient,
   chatId: bigint,
   limit: number,
+  queues?: Queues,
 ): Promise<void> {
   const msgs = await client.getMessages(chatId as any, { limit });
 
@@ -111,6 +123,16 @@ async function backfillMessages(
           reactionsCount: 0,
           timestamp: new Date((msg.date ?? Math.floor(Date.now() / 1000)) * 1000),
         }).run();
+
+        // Get the auto-incremented internal id
+        const inserted = db.select({ id: messages.id })
+          .from(messages)
+          .where(eq(messages.tgMessageId, msg.id))
+          .get();
+
+        if (queues && inserted) {
+          await queues.classify.add('classify', { messageId: inserted.id, text: msg.text });
+        }
       }
     } catch {
       // Skip problematic messages

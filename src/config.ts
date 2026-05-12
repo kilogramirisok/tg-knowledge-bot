@@ -12,11 +12,12 @@ const envSchema = z.object({
   LLM_MODEL: z.string().default('google/gemini-2.0-flash-001'),
   EMBEDDING_MODEL: z.string().default('text-embedding-3-small'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  REDIS_URL: z.string().default('redis://localhost:6379'),
 });
 
 export type Config = z.infer<typeof envSchema>;
 
-const VALID_MODES = ['seed', 'ingest', 'analyze', 'reputation', 'query', 'all'] as const;
+const VALID_MODES = ['seed', 'ingest', 'analyze', 'reputation', 'query', 'worker', 'all'] as const;
 
 export function getMode(): string {
   const args = process.argv;
