@@ -1,17 +1,23 @@
-FROM node:22-slim
+FROM node:24-alpine
 
-# Install pnpm + build tools for native modules (better-sqlite3)
-RUN corepack enable && \
-    apt-get update && \
-    apt-get install -y python3 make g++ && \
-    rm -rf /var/lib/apt/lists/*
+# Build tools for native modules (better-sqlite3)
+RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-RUN pnpm install --frozen-lockfile --prod=false
+# Install pnpm via corepack
+RUN corepack enable && corepack prepare pnpm@latest --activate
 
+# Install deps (cached layer)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+ENV CI=true
+RUN pnpm install --frozen-lockfile
+
+# Build + copy source
 COPY . .
 RUN pnpm run build
+
+# Remove devDeps for smaller image
+RUN pnpm prune --prod
 
 CMD ["node", "dist/main.js", "--mode=all"]

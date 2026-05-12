@@ -6,3 +6,4 @@ data/
 .env
 .tg-session
 .hermes/
+.pnpm-store/
