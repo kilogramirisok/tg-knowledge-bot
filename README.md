@@ -134,14 +134,15 @@ pnpm run db:push
 ## Docker
 
 ```bash
-# Start bot + Redis
+# Start bot + worker + Redis
 docker compose up -d
 
 # Check logs
 docker compose logs -f bot
+docker compose logs -f worker
 
 # Query the KB
-docker compose exec bot pnpm run query
+docker compose exec bot node dist/main.js --mode=query
 ```
 
 ## Contributors
