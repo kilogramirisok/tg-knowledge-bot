@@ -2,8 +2,6 @@
 
 Telegram group knowledge base builder. Connects to a Telegram group via your personal account (MTProto), analyzes messages, builds a searchable knowledge base with deduplication and quality scoring based on user reputation and answer completeness.
 
-Built for `@taxesnomadspain` (~3K members, Spain tax/nomad topics).
-
 ## Architecture
 
 ```
