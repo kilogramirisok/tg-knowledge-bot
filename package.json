@@ -1,7 +1,15 @@
 {
   "name": "tg-knowledge-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "description": "Telegram group knowledge base builder — analyzes messages, deduplicates, scores by reputation, and builds a searchable KB",
+  "author": "Roman Rolgin <rolginroman@users.noreply.github.com>",
+  "contributors": [
+    "Hermes Agent <hermes@nousresearch.com>"
+  ],
+  "license": "MIT",
+  "repository": "github:kilogramirisok/tg-knowledge-bot",
   "type": "module",
+  "packageManager": "pnpm@11.1.0",
   "engines": {
     "node": ">=24.0.0"
   },
